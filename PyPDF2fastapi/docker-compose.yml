@@ -1,0 +1,26 @@
+version: '3.8'
+
+services:
+  web:
+    image: charankumarbs/selfhost-pdf-compressor:latest
+    build:
+      context: .
+      dockerfile: src/Dockerfile
+      network: host           # use host network for the build so apt/pip can resolve mirrors
+      args:
+        INSTALL_GS: "true"    # set to "false" to skip Ghostscript install
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000
+    # For local development you can mount ./src, but avoid for production to prevent recreate issues
+    # volumes:
+    #   - ./src/:/usr/src/app/
+    ports:
+      - "8002:8000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://127.0.0.1:8000/ping || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    dns:
+      - 8.8.8.8
+      - 8.8.4.4
