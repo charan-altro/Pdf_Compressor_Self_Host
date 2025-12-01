@@ -33,9 +33,34 @@ RUN set -eux; \
         echo "Building libpng ${LIBPNG_VERSION} from source to ensure patched libpng is installed"; \
         # install minimal build deps
         apt-get install -y --no-install-recommends build-essential wget ca-certificates zlib1g-dev xz-utils; \
-        wget -qO /tmp/libpng.tar.xz "https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"; \
-        tar -xf /tmp/libpng.tar.xz -C /tmp; \
-        cd /tmp/libpng-${LIBPNG_VERSION} && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install; \
+        # determine download URL: support LIBPNG_VERSION=latest or an explicit version
+        if [ "${LIBPNG_VERSION}" = "latest" ]; then \
+            echo "Resolving latest libpng release from SourceForge..."; \
+            FILE=$(wget -qO- https://download.sourceforge.net/libpng/ | grep -oE 'libpng-[0-9]+(\\.[0-9]+){1,2}\\.tar\\.(xz|gz)' | sort -V | tail -n1 || true); \
+            if [ -n "${FILE}" ]; then \
+                URL="https://download.sourceforge.net/libpng/${FILE}"; \
+                OUT="/tmp/${FILE}"; \
+            else \
+                echo "Warning: could not determine latest libpng; falling back to ${LIBPNG_VERSION} naming"; \
+                URL="https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"; \
+                OUT="/tmp/libpng-${LIBPNG_VERSION}.tar.xz"; \
+            fi; \
+        else \
+            FILE="libpng-${LIBPNG_VERSION}.tar.xz"; \
+            URL="https://download.sourceforge.net/libpng/${FILE}"; \
+            OUT="/tmp/${FILE}"; \
+        fi; \
+        echo "Downloading ${URL} ..."; \
+        wget -qO "${OUT}" "${URL}"; \
+        case "${OUT}" in \
+            *.tar.xz) tar -xf "${OUT}" -C /tmp ;; \
+            *.tar.gz) tar -xzf "${OUT}" -C /tmp ;; \
+            *.tgz)    tar -xzf "${OUT}" -C /tmp ;; \
+            *) echo "Unknown archive format: ${OUT}" >&2; exit 1 ;; \
+        esac; \
+        # find extracted dir (prefix libpng-<ver>)
+        DIR=$(basename "${OUT}" | sed -E 's/^(libpng-[0-9.]+)\\.tar\\.(xz|gz|tgz)$/\\1/'); \
+        cd /tmp/${DIR} && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install; \
         ldconfig; \
         rm -rf /tmp/libpng*; \
         # remove build deps to shrink image
