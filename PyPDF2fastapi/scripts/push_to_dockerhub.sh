@@ -1,5 +1,5 @@
-#!/usr/bin/env bash
-set -euo pipefail
+#!/bin/sh
+set -eu
 
 # Minimal usage/help
 usage() {
@@ -27,7 +27,7 @@ EOF
 : "${CONTEXT:=.}"
 
 # if user asked for help
-if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
+if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
   usage
   exit 0
 fi
@@ -39,7 +39,7 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 # require credentials in env
-if [[ -z "${DOCKERHUB_USERNAME:-}" || -z "${DOCKERHUB_PASSWORD:-}" ]]; then
+if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_PASSWORD:-}" ]; then
   echo "Error: set DOCKERHUB_USERNAME and DOCKERHUB_PASSWORD environment variables." >&2
   usage
   exit 2
@@ -58,7 +58,7 @@ echo "Pushing ${FULL_TAG}..."
 docker push "${FULL_TAG}"
 
 # Optionally also push 'latest' when TAG is something else
-if [[ "${TAG}" != "latest" ]]; then
+if [ "${TAG}" != "latest" ]; then
   echo "Also tagging and pushing 'latest' -> ${IMAGE_NAME}:latest"
   docker tag "${FULL_TAG}" "${IMAGE_NAME}:latest"
   docker push "${IMAGE_NAME}:latest"
