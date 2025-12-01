@@ -4,20 +4,22 @@ set -eu
 # Minimal usage/help
 usage() {
   cat <<EOF
-Usage: DOCKERHUB_USERNAME=... DOCKERHUB_PASSWORD=... ./scripts/push_to_dockerhub.sh [options]
+Usage: DOCKERHUB_USERNAME=... DOCKERHUB_PASSWORD=... ./scripts/push_to_dockerhub.sh
 
 Environment variables (defaults shown):
-  IMAGE_NAME            ${IMAGE_NAME:-charankumarbs/selfhost-pdf-compressor}
-  TAG                   ${TAG:-latest}
-  INSTALL_GS            ${INSTALL_GS:-true}   # build-arg passed to Docker
-  DOCKERFILE            ${DOCKERFILE:-src/Dockerfile}
-  CONTEXT               ${CONTEXT:-.}
-  BUILD_NETWORK         ${BUILD_NETWORK:-host}   # use 'host' to help DNS during build; set to 'default' or '' to skip flag
-  BUILD_RETRIES         ${BUILD_RETRIES:-3}      # retry build this many times on failure
-
+  IMAGE_NAME        ${IMAGE_NAME:-charankumarbs/selfhost-pdf-compressor}
+  TAG               ${TAG:-latest}
+  INSTALL_GS        ${INSTALL_GS:-true}
+  DOCKERFILE        ${DOCKERFILE:-src/Dockerfile}
+  CONTEXT           ${CONTEXT:-.}
+  PLATFORMS         ${PLATFORMS:-linux/amd64,linux/arm64}
+  USE_BUILDX        ${USE_BUILDX:-true}
+  BUILDER_NAME      ${BUILDER_NAME:-multi-builder}
+  CREATE_BUILDER    ${CREATE_BUILDER:-true}
+  REGISTER_QEMU     ${REGISTER_QEMU:-false}   # set true on supported hosts to enable emulation
 Examples:
   DOCKERHUB_USERNAME=user DOCKERHUB_PASSWORD=pass ./scripts/push_to_dockerhub.sh
-  IMAGE_NAME=me/repo TAG=v1.2.3 ./scripts/push_to_dockerhub.sh
+  PLATFORMS=linux/amd64,linux/arm64 TAG=v1.2.3 ./scripts/push_to_dockerhub.sh
 EOF
 }
 
@@ -27,8 +29,11 @@ EOF
 : "${INSTALL_GS:=true}"
 : "${DOCKERFILE:=src/Dockerfile}"
 : "${CONTEXT:=.}"
-: "${BUILD_NETWORK:=host}"     # use 'host' to help DNS during build; set to 'default' or '' to skip flag
-: "${BUILD_RETRIES:=3}"        # retry build this many times on failure
+: "${PLATFORMS:=linux/amd64,linux/arm64}"
+: "${USE_BUILDX:=true}"
+: "${BUILDER_NAME:=multi-builder}"
+: "${CREATE_BUILDER:=true}"
+: "${REGISTER_QEMU:=false}"
 
 # if user asked for help
 if [ "${1:-}" = "--help" ] || [ "${1:-}" = "-h" ]; then
@@ -49,44 +54,52 @@ if [ -z "${DOCKERHUB_USERNAME:-}" ] || [ -z "${DOCKERHUB_PASSWORD:-}" ]; then
   exit 2
 fi
 
-FULL_TAG="${IMAGE_NAME}:${TAG}"
-
-# prepare network args (omit if empty or set to 'default' to use Docker default)
-NETWORK_ARGS=""
-if [ -n "${BUILD_NETWORK}" ] && [ "${BUILD_NETWORK}" != "default" ]; then
-  NETWORK_ARGS="--network ${BUILD_NETWORK}"
-fi
-
-echo "Building image ${FULL_TAG} using ${DOCKERFILE} (INSTALL_GS=${INSTALL_GS})..."
-echo "Build network: ${BUILD_NETWORK:-default}, retries: ${BUILD_RETRIES}"
-
-# build with retries to tolerate transient DNS/network failures
-i=1
-while [ "$i" -le "${BUILD_RETRIES}" ]; do
-  echo "Build attempt ${i}/${BUILD_RETRIES}..."
-  if docker build ${NETWORK_ARGS} --build-arg INSTALL_GS="${INSTALL_GS}" -f "${DOCKERFILE}" -t "${FULL_TAG}" "${CONTEXT}"; then
-    break
-  fi
-  if [ "$i" -lt "${BUILD_RETRIES}" ]; then
-    echo "Build failed, retrying in 5s..."
-    sleep 5
-  else
-    echo "Build failed after ${BUILD_RETRIES} attempts." >&2
-    exit 1
-  fi
-  i=$((i+1))
-done
-
-echo "Logging into Docker Hub as ${DOCKERHUB_USERNAME}..."
-# pass password via stdin to avoid leaking in process list
+# login first (required for buildx push to Docker Hub)
 printf "%s" "${DOCKERHUB_PASSWORD}" | docker login --username "${DOCKERHUB_USERNAME}" --password-stdin
 
-echo "Pushing ${FULL_TAG}..."
-docker push "${FULL_TAG}"
-
-# Optionally also push 'latest' when TAG is something else
+# prepare tags
+FULL_TAG="${IMAGE_NAME}:${TAG}"
+TAGS="-t ${FULL_TAG}"
 if [ "${TAG}" != "latest" ]; then
-  echo "Also tagging and pushing 'latest' -> ${IMAGE_NAME}:latest"
+  TAGS="${TAGS} -t ${IMAGE_NAME}:latest"
+fi
+
+# Use buildx multi-arch build when requested
+if [ "${USE_BUILDX}" = "true" ]; then
+  if ! docker buildx version >/dev/null 2>&1; then
+    echo "Warning: docker buildx not found or not available. Falling back to single-arch docker build."
+    USE_BUILDX=false
+  fi
+fi
+
+if [ "${USE_BUILDX}" = "true" ]; then
+  # create / bootstrap builder if requested
+  if [ "${CREATE_BUILDER}" = "true" ]; then
+    echo "Creating/using buildx builder: ${BUILDER_NAME}"
+    # create builder if not exists; --use to switch to it
+    docker buildx create --name "${BUILDER_NAME}" --use >/dev/null 2>&1 || docker buildx use "${BUILDER_NAME}" >/dev/null 2>&1 || true
+    docker buildx inspect "${BUILDER_NAME}" --bootstrap >/dev/null 2>&1 || true
+  fi
+
+  # optional QEMU registration (requires privileged)
+  if [ "${REGISTER_QEMU}" = "true" ]; then
+    echo "Registering QEMU emulators for multi-arch (requires privileged Docker)"
+    docker run --rm --privileged tonistiigi/binfmt:latest --install all || true
+  fi
+
+  echo "Building multi-arch image ${IMAGE_NAME} for platforms: ${PLATFORMS}"
+  # buildx accepts multiple -t flags; ensure TAGS is expanded
+  # shellcheck disable=SC2086
+  docker buildx build --platform "${PLATFORMS}" --build-arg INSTALL_GS="${INSTALL_GS}" -f "${DOCKERFILE}" ${TAGS} "${CONTEXT}" --push
+  echo "Buildx finished and pushed: ${IMAGE_NAME}:${TAG}"
+  exit 0
+fi
+
+# Fallback: single-arch build & push (amd64 default) if buildx disabled/unavailable
+echo "Building single-arch image ${FULL_TAG} using docker build..."
+docker build --build-arg INSTALL_GS="${INSTALL_GS}" -f "${DOCKERFILE}" -t "${FULL_TAG}" "${CONTEXT}"
+docker push "${FULL_TAG}"
+if [ "${TAG}" != "latest" ]; then
   docker tag "${FULL_TAG}" "${IMAGE_NAME}:latest"
   docker push "${IMAGE_NAME}:latest"
 fi
