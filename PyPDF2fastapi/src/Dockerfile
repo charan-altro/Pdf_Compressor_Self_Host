@@ -13,6 +13,9 @@ ENV PYTHONUNBUFFERED=1
 ARG INSTALL_GS=true
 # option to try installing a newer libpng from backports if available
 ARG USE_BACKPORTS=false
+# option to compile and install patched libpng from source (recommended when distro has no fix)
+ARG LIBPNG_PATCH=true
+ARG LIBPNG_VERSION=1.6.51
 
 # update base packages, try to upgrade libpng if a fixed package is available,
 # optionally pull libpng from bookworm-backports, then optionally install ghostscript.
@@ -22,11 +25,22 @@ RUN set -eux; \
     if [ "${USE_BACKPORTS}" = "true" ]; then \
         echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/bookworm-backports.list; \
         apt-get update; \
-        # try to install newer libpng from backports (non-fatal if not available)
         apt-get -t bookworm-backports install -y --no-install-recommends libpng16-16 || true; \
     else \
-        # try to upgrade libpng from the regular repos (non-fatal if not available)
         apt-get install --only-upgrade -y --no-install-recommends libpng16-16 || true; \
+    fi; \
+    if [ "${LIBPNG_PATCH}" = "true" ]; then \
+        echo "Building libpng ${LIBPNG_VERSION} from source to ensure patched libpng is installed"; \
+        # install minimal build deps
+        apt-get install -y --no-install-recommends build-essential wget ca-certificates zlib1g-dev xz-utils; \
+        wget -qO /tmp/libpng.tar.xz "https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"; \
+        tar -xf /tmp/libpng.tar.xz -C /tmp; \
+        cd /tmp/libpng-${LIBPNG_VERSION} && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install; \
+        ldconfig; \
+        rm -rf /tmp/libpng*; \
+        # remove build deps to shrink image
+        apt-get purge -y build-essential wget xz-utils; \
+        apt-get autoremove -y; \
     fi; \
     if [ "$INSTALL_GS" = "true" ] ; then \
         apt-get install -y --no-install-recommends ghostscript ca-certificates; \
