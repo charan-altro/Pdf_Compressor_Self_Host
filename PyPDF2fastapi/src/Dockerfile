@@ -11,64 +11,34 @@ ENV PYTHONUNBUFFERED=1
 
 # allow optional Ghostscript install via build-arg (default: true)
 ARG INSTALL_GS=true
-# option to try installing a newer libpng from backports if available
-ARG USE_BACKPORTS=false
-# option to compile and install patched libpng from source (recommended when distro has no fix)
-ARG LIBPNG_PATCH=true
-ARG LIBPNG_VERSION=1.6.51
+# choose which Debian suite/repo to use for getting the newest OS packages
+# valid values: stable | backports | testing | unstable
+# e.g. --build-arg TARGET_SUITE=unstable
+ARG TARGET_SUITE=backports
 
-# update base packages, try to upgrade libpng if a fixed package is available,
-# optionally pull libpng from bookworm-backports, then optionally install ghostscript.
+# Prefer TARGET_SUITE for all OS packages by pinning that suite and setting Default-Release.
 RUN set -eux; \
     apt-get update; \
     apt-get upgrade -y; \
-    if [ "${USE_BACKPORTS}" = "true" ]; then \
-        echo "deb http://deb.debian.org/debian bookworm-backports main" > /etc/apt/sources.list.d/bookworm-backports.list; \
-        apt-get update; \
-        apt-get -t bookworm-backports install -y --no-install-recommends libpng16-16 || true; \
+    case "${TARGET_SUITE:-}" in \
+        backports) ARCH="bookworm-backports"; SOURCELINE="deb http://deb.debian.org/debian bookworm-backports main contrib non-free";; \
+        testing)    ARCH="testing";                SOURCELINE="deb http://deb.debian.org/debian testing main contrib non-free";; \
+        unstable)   ARCH="unstable";               SOURCELINE="deb http://deb.debian.org/debian unstable main contrib non-free";; \
+        stable|*|'') ARCH="";                       SOURCELINE="";; \
+    esac; \
+    if [ -n "${SOURCELINE}" ]; then echo "${SOURCELINE}" > /etc/apt/sources.list.d/target.list; fi; \
+    if [ -n "${ARCH}" ]; then \
+        cat > /etc/apt/preferences.d/99target <<'EOF'\nPackage: *\nPin: release a=${ARCH}\nPin-Priority: 990\nEOF\n        echo "APT::Default-Release \"${ARCH}\";" > /etc/apt/apt.conf.d/99defaultrelease; \
+    fi; \
+    apt-get update; \
+    if [ -n "${ARCH}" ]; then \
+        apt-get -t "${ARCH}" dist-upgrade -y || apt-get -t "${ARCH}" upgrade -y || true; \
     else \
-        apt-get install --only-upgrade -y --no-install-recommends libpng16-16 || true; \
+        apt-get dist-upgrade -y || apt-get upgrade -y || true; \
     fi; \
-    if [ "${LIBPNG_PATCH}" = "true" ]; then \
-        echo "Building libpng ${LIBPNG_VERSION} from source to ensure patched libpng is installed"; \
-        # install minimal build deps
-        apt-get install -y --no-install-recommends build-essential wget ca-certificates zlib1g-dev xz-utils; \
-        # determine download URL: support LIBPNG_VERSION=latest or an explicit version
-        if [ "${LIBPNG_VERSION}" = "latest" ]; then \
-            echo "Resolving latest libpng release from SourceForge..."; \
-            FILE=$(wget -qO- https://download.sourceforge.net/libpng/ | grep -oE 'libpng-[0-9]+(\\.[0-9]+){1,2}\\.tar\\.(xz|gz)' | sort -V | tail -n1 || true); \
-            if [ -n "${FILE}" ]; then \
-                URL="https://download.sourceforge.net/libpng/${FILE}"; \
-                OUT="/tmp/${FILE}"; \
-            else \
-                echo "Warning: could not determine latest libpng; falling back to ${LIBPNG_VERSION} naming"; \
-                URL="https://download.sourceforge.net/libpng/libpng-${LIBPNG_VERSION}.tar.xz"; \
-                OUT="/tmp/libpng-${LIBPNG_VERSION}.tar.xz"; \
-            fi; \
-        else \
-            FILE="libpng-${LIBPNG_VERSION}.tar.xz"; \
-            URL="https://download.sourceforge.net/libpng/${FILE}"; \
-            OUT="/tmp/${FILE}"; \
-        fi; \
-        echo "Downloading ${URL} ..."; \
-        wget -qO "${OUT}" "${URL}"; \
-        case "${OUT}" in \
-            *.tar.xz) tar -xf "${OUT}" -C /tmp ;; \
-            *.tar.gz) tar -xzf "${OUT}" -C /tmp ;; \
-            *.tgz)    tar -xzf "${OUT}" -C /tmp ;; \
-            *) echo "Unknown archive format: ${OUT}" >&2; exit 1 ;; \
-        esac; \
-        # find extracted dir (prefix libpng-<ver>)
-        DIR=$(basename "${OUT}" | sed -E 's/^(libpng-[0-9.]+)\\.tar\\.(xz|gz|tgz)$/\\1/'); \
-        cd /tmp/${DIR} && ./configure --prefix=/usr/local && make -j"$(nproc)" && make install; \
-        ldconfig; \
-        rm -rf /tmp/libpng*; \
-        # remove build deps to shrink image
-        apt-get purge -y build-essential wget xz-utils; \
-        apt-get autoremove -y; \
-    fi; \
-    if [ "$INSTALL_GS" = "true" ] ; then \
-        apt-get install -y --no-install-recommends ghostscript ca-certificates; \
+    if [ "${INSTALL_GS}" = "true" ]; then \
+        apt-get update; \
+        apt-get install -y --no-install-recommends ghostscript ca-certificates || true; \
     else \
         echo "Skipping ghostscript install (BUILD ARG INSTALL_GS=false)"; \
     fi; \
