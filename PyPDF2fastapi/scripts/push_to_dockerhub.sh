@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Variables
-IMAGE_NAME="pdf-compressor"
+IMAGE_NAME="selfhost-pdf-compressor" # Updated to match the repository name
 DOCKERHUB_USERNAME="charankumarbs" # Replace with your Docker Hub username
 TAG="latest"
 PLATFORMS="linux/amd64,linux/arm64"
