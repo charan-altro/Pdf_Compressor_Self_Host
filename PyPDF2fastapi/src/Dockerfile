@@ -8,13 +8,10 @@ WORKDIR /usr/src/app
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
 
-# Select PDF tool: set INSTALL_GS=true to install Ghostscript, otherwise qpdf will be used.
 ARG INSTALL_GS=true
 
-# copy only requirements first to leverage Docker layer cache
 COPY requirements.txt /usr/src/app/requirements.txt
 
-# install runtime deps and build deps, install python packages, then remove build deps
 RUN apk add --no-cache ca-certificates \
  && apk add --no-cache --virtual .build-deps gcc musl-dev libffi-dev openssl-dev zlib-dev jpeg-dev \
  && if [ "${INSTALL_GS}" = "true" ]; then apk add --no-cache ghostscript; else apk add --no-cache qpdf; fi \
@@ -23,10 +20,8 @@ RUN apk add --no-cache ca-certificates \
  && apk del .build-deps \
  && rm -rf /var/cache/apk/*
 
-# copy app sources
 COPY . /usr/src/app/
 
-# create non-root user
 RUN adduser -D -u 1000 appuser \
  && chown -R appuser:appuser /usr/src/app
 
