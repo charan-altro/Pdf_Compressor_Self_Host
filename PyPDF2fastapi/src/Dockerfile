@@ -1,4 +1,4 @@
-FROM python:3.10-slim-bullseye
+FROM python:3.10-slim-bookworm
 
 LABEL org.opencontainers.image.title="Selfhost PDF Compressor Tool - FastAPI"
 ENV PROJECT_NAME="Selfhost PDF Compressor Tool - FastAPI"
