@@ -28,6 +28,26 @@ def _validate_pdf_upload(file: UploadFile):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
 
+def _decrypt_pdf_if_needed(input_bytes: bytes) -> bytes:
+    input_buffer = BytesIO(input_bytes)
+    reader = PdfReader(input_buffer)
+    if not reader.is_encrypted:
+        return input_bytes
+
+    try:
+        reader.decrypt("")
+    except Exception:
+        raise ValueError("This PDF is password-protected. Please remove the password before compressing.")
+
+    writer = PdfWriter()
+    for page in reader.pages:
+        writer.add_page(page)
+
+    out_buf = BytesIO()
+    writer.write(out_buf)
+    return out_buf.getvalue()
+
+
 def _compress_lossless_bytes(input_bytes: bytes) -> bytes:
     input_buffer = BytesIO(input_bytes)
     reader = PdfReader(input_buffer)
@@ -537,6 +557,12 @@ async def compress_lossless(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
+        # Decrypt first if owner-locked
+        try:
+            input_bytes = _decrypt_pdf_if_needed(input_bytes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # Run CPU-bound compression in non-blocking threadpool
         output_bytes = await run_in_threadpool(_compress_lossless_bytes, input_bytes)
         compressed_size = len(output_bytes)
@@ -569,6 +595,12 @@ async def compress_optimized(file: UploadFile = File(...)):
         original_size = len(input_bytes)
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
+
+        # Decrypt first if owner-locked
+        try:
+            input_bytes = _decrypt_pdf_if_needed(input_bytes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Run blocking process wrapper in non-blocking threadpool (Keep font embedding for high quality)
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/printer", True)
@@ -605,6 +637,12 @@ async def compress_little(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
+        # Decrypt first if owner-locked
+        try:
+            input_bytes = _decrypt_pdf_if_needed(input_bytes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # Run blocking process wrapper in non-blocking threadpool (Disable font embedding for better compression)
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/ebook", False)
         compressed_size = len(output_bytes)
@@ -639,6 +677,12 @@ async def compress_max(file: UploadFile = File(...)):
         original_size = len(input_bytes)
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
+
+        # Decrypt first if owner-locked
+        try:
+            input_bytes = _decrypt_pdf_if_needed(input_bytes)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
 
         # Run blocking process wrapper in non-blocking threadpool (Disable font embedding for max compression)
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/screen", False)
