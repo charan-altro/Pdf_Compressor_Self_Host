@@ -1,6 +1,7 @@
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.responses import StreamingResponse
-from PyPDF2 import PdfReader, PdfWriter
+from fastapi.concurrency import run_in_threadpool
+from pypdf import PdfReader, PdfWriter
 from io import BytesIO
 import tempfile
 import subprocess
@@ -11,7 +12,7 @@ app = FastAPI(
     title="Selfhost PDF Compressor Tool - FastAPI",
     description=(
         "Selfhost PDF Compressor Tool (FastAPI). "
-        "Provides lossless compression (PyPDF2) and optional lossy optimizations via Ghostscript "
+        "Provides lossless compression (pypdf) and optional lossy optimizations via Ghostscript "
         "with endpoints: /compress/lossless, /compress/optimized, /compress/little, /compress/max."
     ),
 )
@@ -27,7 +28,7 @@ def _validate_pdf_upload(file: UploadFile):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
 
 
-async def _compress_lossless_bytes(input_bytes: bytes) -> bytes:
+def _compress_lossless_bytes(input_bytes: bytes) -> bytes:
     input_buffer = BytesIO(input_bytes)
     reader = PdfReader(input_buffer)
     writer = PdfWriter()
@@ -79,6 +80,19 @@ def _run_ghostscript_bytes(input_bytes: bytes, pdfsetting: str) -> bytes:
             pass
 
 
+def _calculate_savings_headers(original_size: int, compressed_size: int, method: str, filename: str, prefix: str) -> dict:
+    saved_size = original_size - compressed_size
+    savings_pct = round((saved_size / original_size) * 100, 2) if original_size > 0 else 0
+    return {
+        "Content-Disposition": f'attachment; filename="{prefix}_{filename}"',
+        "X-Original-Size": str(original_size),
+        "X-Compressed-Size": str(compressed_size),
+        "X-Saved-Size": str(saved_size),
+        "X-Savings-Percentage": f"{savings_pct}%",
+        "X-Compression-Method": method,
+    }
+
+
 @app.post("/compress")
 async def compress_pdf(file: UploadFile = File(...)):
     # alias to lossless for backward compatibility
@@ -94,7 +108,8 @@ async def compress_lossless(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        output_bytes = await _compress_lossless_bytes(input_bytes)
+        # Run CPU-bound compression in non-blocking threadpool
+        output_bytes = await run_in_threadpool(_compress_lossless_bytes, input_bytes)
         compressed_size = len(output_bytes)
 
     except HTTPException:
@@ -102,12 +117,9 @@ async def compress_lossless(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lossless compression failed: {e}")
 
-    headers = {
-        "Content-Disposition": f'attachment; filename="lossless_compressed_{file.filename}"',
-        "X-Original-Size": str(original_size),
-        "X-Compressed-Size": str(compressed_size),
-        "X-Compression-Method": "lossless (PyPDF2)",
-    }
+    headers = _calculate_savings_headers(
+        original_size, compressed_size, "lossless (pypdf)", file.filename, "lossless_compressed"
+    )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
 
@@ -121,8 +133,8 @@ async def compress_optimized(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # minimal compression / high quality -> use Ghostscript /printer or /prepress
-        output_bytes = _run_ghostscript_bytes(input_bytes, "/printer")
+        # Run blocking process wrapper in non-blocking threadpool
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/printer")
         compressed_size = len(output_bytes)
 
     except HTTPException:
@@ -132,12 +144,9 @@ async def compress_optimized(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Optimized compression failed: {e}")
 
-    headers = {
-        "Content-Disposition": f'attachment; filename="optimized_{file.filename}"',
-        "X-Original-Size": str(original_size),
-        "X-Compressed-Size": str(compressed_size),
-        "X-Compression-Method": "ghostscript (/printer) - minimal loss",
-    }
+    headers = _calculate_savings_headers(
+        original_size, compressed_size, "ghostscript (/printer) - minimal loss", file.filename, "optimized"
+    )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
 
@@ -151,8 +160,8 @@ async def compress_little(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # medium compression -> /ebook
-        output_bytes = _run_ghostscript_bytes(input_bytes, "/ebook")
+        # Run blocking process wrapper in non-blocking threadpool
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/ebook")
         compressed_size = len(output_bytes)
 
     except HTTPException:
@@ -162,12 +171,9 @@ async def compress_little(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Little/medium compression failed: {e}")
 
-    headers = {
-        "Content-Disposition": f'attachment; filename="little_loss_{file.filename}"',
-        "X-Original-Size": str(original_size),
-        "X-Compressed-Size": str(compressed_size),
-        "X-Compression-Method": "ghostscript (/ebook) - medium",
-    }
+    headers = _calculate_savings_headers(
+        original_size, compressed_size, "ghostscript (/ebook) - medium", file.filename, "little_loss"
+    )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
 
@@ -181,8 +187,8 @@ async def compress_max(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # maximum compression -> /screen (low res)
-        output_bytes = _run_ghostscript_bytes(input_bytes, "/screen")
+        # Run blocking process wrapper in non-blocking threadpool
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/screen")
         compressed_size = len(output_bytes)
 
     except HTTPException:
@@ -192,10 +198,7 @@ async def compress_max(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Max compression failed: {e}")
 
-    headers = {
-        "Content-Disposition": f'attachment; filename="max_compressed_{file.filename}"',
-        "X-Original-Size": str(original_size),
-        "X-Compressed-Size": str(compressed_size),
-        "X-Compression-Method": "ghostscript (/screen) - maximum",
-    }
+    headers = _calculate_savings_headers(
+        original_size, compressed_size, "ghostscript (/screen) - maximum", file.filename, "max_compressed"
+    )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
