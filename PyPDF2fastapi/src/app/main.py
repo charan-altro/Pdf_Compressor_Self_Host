@@ -40,12 +40,17 @@ def _compress_lossless_bytes(input_bytes: bytes) -> bytes:
             pass
         writer.add_page(page)
 
+    try:
+        writer.compress_identical_objects()
+    except Exception:
+        pass
+
     output_buffer = BytesIO()
     writer.write(output_buffer)
     return output_buffer.getvalue()
 
 
-def _run_ghostscript_bytes(input_bytes: bytes, pdfsetting: str) -> bytes:
+def _run_ghostscript_bytes(input_bytes: bytes, pdfsetting: str, embed_fonts: bool = True) -> bytes:
     gs_path = shutil.which("gs")
     if not gs_path:
         raise RuntimeError("Ghostscript (gs) not available in container")
@@ -63,9 +68,25 @@ def _run_ghostscript_bytes(input_bytes: bytes, pdfsetting: str) -> bytes:
             "-dNOPAUSE",
             "-dQUIET",
             "-dBATCH",
+            "-dCompressPages=true",
+            "-dUseFlateCompression=true",
+            "-dDetectDuplicateImages=true",
+        ]
+        if not embed_fonts:
+            cmd.extend([
+                "-dEmbedAllFonts=false",
+                "-dSubsetFonts=true"
+            ])
+        else:
+            cmd.extend([
+                "-dEmbedAllFonts=true",
+                "-dSubsetFonts=true"
+            ])
+        
+        cmd.extend([
             f"-sOutputFile={out_path}",
             inf.name,
-        ]
+        ])
         subprocess.run(cmd, check=True)
         with open(out_path, "rb") as f:
             return f.read()
@@ -549,8 +570,8 @@ async def compress_optimized(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # Run blocking process wrapper in non-blocking threadpool
-        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/printer")
+        # Run blocking process wrapper in non-blocking threadpool (Keep font embedding for high quality)
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/printer", True)
         compressed_size = len(output_bytes)
 
         # Smart fallback: if compression increases size, return the original
@@ -584,8 +605,8 @@ async def compress_little(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # Run blocking process wrapper in non-blocking threadpool
-        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/ebook")
+        # Run blocking process wrapper in non-blocking threadpool (Disable font embedding for better compression)
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/ebook", False)
         compressed_size = len(output_bytes)
 
         # Smart fallback: if compression increases size, return the original
@@ -619,8 +640,8 @@ async def compress_max(file: UploadFile = File(...)):
         if original_size == 0:
             raise HTTPException(status_code=400, detail="Empty file")
 
-        # Run blocking process wrapper in non-blocking threadpool
-        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/screen")
+        # Run blocking process wrapper in non-blocking threadpool (Disable font embedding for max compression)
+        output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/screen", False)
         compressed_size = len(output_bytes)
 
         # Smart fallback: if compression increases size, return the original
