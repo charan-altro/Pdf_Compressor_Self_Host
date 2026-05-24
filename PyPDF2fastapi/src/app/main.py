@@ -249,7 +249,7 @@ async def index():
 
                 <!-- Results Block (hidden initially) -->
                 <div id="results-card" class="hidden mt-8 border-t border-gray-800 pt-8 space-y-6">
-                    <h3 class="text-lg font-bold text-gray-100 flex items-center gap-2">
+                    <h3 id="res-title" class="text-lg font-bold text-gray-100 flex items-center gap-2">
                         <i class="fa-solid fa-circle-check text-emerald-500"></i> Compression Completed!
                     </h3>
                     
@@ -263,7 +263,7 @@ async def index():
                             <p id="res-compressed" class="text-lg font-bold text-gray-200 mt-1"></p>
                         </div>
                         <div class="bg-gray-800/30 p-4 border border-gray-800 rounded-xl">
-                            <p class="text-xs text-gray-400">Saved</p>
+                            <p id="lbl-saved" class="text-xs text-gray-400">Saved</p>
                             <p id="res-saved" class="text-lg font-bold text-emerald-400 mt-1"></p>
                         </div>
                         <div class="bg-gray-800/30 p-4 border border-gray-800 rounded-xl">
@@ -312,13 +312,16 @@ async def index():
             
             let selectedFile = null;
 
-            // Bytes Formatting
+            // Absolute Safe Bytes Formatting (Handles Negative Values!)
             function formatBytes(bytes) {
                 if (bytes === 0) return '0 Bytes';
+                const isNegative = bytes < 0;
+                const absBytes = Math.abs(bytes);
                 const k = 1024;
-                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                const i = Math.floor(Math.log(absBytes) / Math.log(k));
                 const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                const formatted = parseFloat((absBytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+                return isNegative ? '-' + formatted : formatted;
             }
 
             // Drag and Drop handlers
@@ -439,7 +442,7 @@ async def index():
                     const original = parseInt(response.headers.get('X-Original-Size')) || selectedFile.size;
                     const compressed = parseInt(response.headers.get('X-Compressed-Size')) || blob.size;
                     const saved = parseInt(response.headers.get('X-Saved-Size')) || (original - compressed);
-                    const ratio = response.headers.get('X-Savings-Percentage') || (round((saved/original)*100, 2) + '%');
+                    const ratio = response.headers.get('X-Savings-Percentage') || '0%';
                     const method = response.headers.get('X-Compression-Method') || "pypdf";
 
                     // Update UI stats
@@ -448,6 +451,23 @@ async def index():
                     document.getElementById('res-saved').textContent = formatBytes(saved);
                     document.getElementById('res-ratio').textContent = ratio;
                     document.getElementById('res-method').textContent = method;
+
+                    // Style depending on savings
+                    const resTitle = document.getElementById('res-title');
+                    const resSaved = document.getElementById('res-saved');
+                    const lblSaved = document.getElementById('lbl-saved');
+                    
+                    if (saved <= 0) {
+                        resTitle.innerHTML = '<i class="fa-solid fa-circle-exclamation text-amber-500"></i> File is already fully optimized!';
+                        lblSaved.textContent = "Difference";
+                        resSaved.className = "text-lg font-bold text-amber-500 mt-1";
+                        resSaved.textContent = "0 Bytes";
+                        document.getElementById('res-ratio').textContent = "0.0%";
+                    } else {
+                        resTitle.innerHTML = '<i class="fa-solid fa-circle-check text-emerald-500"></i> Compression Completed!';
+                        lblSaved.textContent = "Saved";
+                        resSaved.className = "text-lg font-bold text-emerald-400 mt-1";
+                    }
 
                     // Set Download Link
                     const downloadUrl = URL.createObjectURL(blob);
@@ -500,13 +520,21 @@ async def compress_lossless(file: UploadFile = File(...)):
         output_bytes = await run_in_threadpool(_compress_lossless_bytes, input_bytes)
         compressed_size = len(output_bytes)
 
+        # Smart fallback: if compression increases size, return the original
+        if compressed_size >= original_size:
+            output_bytes = input_bytes
+            compressed_size = original_size
+            method_desc = "lossless (pypdf) - already optimized"
+        else:
+            method_desc = "lossless (pypdf)"
+
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Lossless compression failed: {e}")
 
     headers = _calculate_savings_headers(
-        original_size, compressed_size, "lossless (pypdf)", file.filename, "lossless_compressed"
+        original_size, compressed_size, method_desc, file.filename, "lossless_compressed"
     )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
@@ -525,6 +553,14 @@ async def compress_optimized(file: UploadFile = File(...)):
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/printer")
         compressed_size = len(output_bytes)
 
+        # Smart fallback: if compression increases size, return the original
+        if compressed_size >= original_size:
+            output_bytes = input_bytes
+            compressed_size = original_size
+            method_desc = "ghostscript (/printer) - already optimized"
+        else:
+            method_desc = "ghostscript (/printer) - minimal loss"
+
     except HTTPException:
         raise
     except RuntimeError as e:
@@ -533,7 +569,7 @@ async def compress_optimized(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Optimized compression failed: {e}")
 
     headers = _calculate_savings_headers(
-        original_size, compressed_size, "ghostscript (/printer) - minimal loss", file.filename, "optimized"
+        original_size, compressed_size, method_desc, file.filename, "optimized"
     )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
@@ -552,6 +588,14 @@ async def compress_little(file: UploadFile = File(...)):
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/ebook")
         compressed_size = len(output_bytes)
 
+        # Smart fallback: if compression increases size, return the original
+        if compressed_size >= original_size:
+            output_bytes = input_bytes
+            compressed_size = original_size
+            method_desc = "ghostscript (/ebook) - already optimized"
+        else:
+            method_desc = "ghostscript (/ebook) - medium"
+
     except HTTPException:
         raise
     except RuntimeError as e:
@@ -560,7 +604,7 @@ async def compress_little(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Little/medium compression failed: {e}")
 
     headers = _calculate_savings_headers(
-        original_size, compressed_size, "ghostscript (/ebook) - medium", file.filename, "little_loss"
+        original_size, compressed_size, method_desc, file.filename, "little_loss"
     )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
 
@@ -579,6 +623,14 @@ async def compress_max(file: UploadFile = File(...)):
         output_bytes = await run_in_threadpool(_run_ghostscript_bytes, input_bytes, "/screen")
         compressed_size = len(output_bytes)
 
+        # Smart fallback: if compression increases size, return the original
+        if compressed_size >= original_size:
+            output_bytes = input_bytes
+            compressed_size = original_size
+            method_desc = "ghostscript (/screen) - already optimized"
+        else:
+            method_desc = "ghostscript (/screen) - maximum"
+
     except HTTPException:
         raise
     except RuntimeError as e:
@@ -587,6 +639,6 @@ async def compress_max(file: UploadFile = File(...)):
         raise HTTPException(status_code=500, detail=f"Max compression failed: {e}")
 
     headers = _calculate_savings_headers(
-        original_size, compressed_size, "ghostscript (/screen) - maximum", file.filename, "max_compressed"
+        original_size, compressed_size, method_desc, file.filename, "max_compressed"
     )
     return StreamingResponse(BytesIO(output_bytes), media_type="application/pdf", headers=headers)
