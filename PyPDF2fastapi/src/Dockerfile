@@ -11,14 +11,14 @@ ENV PYTHONUNBUFFERED=1
 # allow optional Ghostscript install via build-arg (default: true)
 ARG INSTALL_GS=true
 
-# install ghostscript only when requested; keep layer small
-RUN if [ "$INSTALL_GS" = "true" ] ; then \
-      apt-get update && \
-      apt-get install -y --no-install-recommends ghostscript ca-certificates && \
-      rm -rf /var/lib/apt/lists/* ; \
+# install ghostscript, perform an OS security upgrade, and clean up
+RUN apt-get update && apt-get upgrade -y && \
+    if [ "$INSTALL_GS" = "true" ] ; then \
+      apt-get install -y --no-install-recommends ghostscript ca-certificates ; \
     else \
       echo "Skipping ghostscript install (BUILD ARG INSTALL_GS=false)"; \
-    fi
+    fi && \
+    rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /usr/src/app/requirements.txt
 RUN pip install --upgrade pip setuptools wheel \
